@@ -1,0 +1,6 @@
+# hidden files/folders
+.*
+__*__
+
+# training artifacts
+catboost_info/
