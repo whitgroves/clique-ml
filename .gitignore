@@ -2,5 +2,9 @@
 .*
 __*__
 
-# training artifacts
+# testing artifacts
 catboost_info/
+
+# build artifacts
+dist/*
+*.egg-info

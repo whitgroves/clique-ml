@@ -87,7 +87,7 @@ class SelectiveEnsemble: # once len(models) >= limit, reject new models with sco
         return len(self.models)
     
     def __repr__(self) -> str:
-        return f'<SelectiveEnsemble ({len(self)} model(s)>' #; mean: {self.mean_score:.8f}; best: {self.best_score:.8f}; limit: {self.limit})>'
+        return f'<SelectiveEnsemble ({len(self)} model(s); mean: {self.mean_score:.8f}; best: {self.best_score:.8f}; limit: {self.limit})>'
     
 # training functions for ensemble
 

@@ -1,0 +1,75 @@
+# build
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clique-ml"
+version = "0.0.3"
+description = "A selective ensemble for predictive models that tests new additions to prevent downgrades in performance."
+keywords = ["selective", "ensemble", "tensorflow", "maching learning", "cuda"]
+requires-python = ">=3.10"
+dependencies = [
+    "joblib>=1.4.2",
+    "psutil>=6.1.0",
+    "pandas>=2.2.2",
+    "numpy>=1.26.4",
+    "scikit-learn>=1.5.2",
+    "typing_extensions>=4.12.2",
+    "tensorflow>=2.18.0",
+]
+readme = "README.md"
+
+[project.urls]
+"Source" = "https://github.com/whitgroves/ensemble"
+
+# test
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = 'INFO'
+
+# based on https://google.github.io/styleguide/pyguide.html#21-lint
+[tool.pylint.main]
+fail-under=9.9 # 1-2 trailing whitespaces can wait
+ignore-patterns = []
+jobs = 0 # use all available processors
+persistent = false
+
+[tool.pylint.basic]
+argument-rgx = "^[a-z][a-z0-9_]*$"
+attr-rgx = "^_{0,2}[a-z][a-z0-9_]*$"
+bad-names = []
+class-attribute-rgx = "^(_?[A-Z][A-Z0-9_]*|__[a-z0-9_]+__|_?[a-z][a-z0-9_]*)$"
+class-rgx = "^_?[A-Z][a-zA-Z0-9]*$"
+const-rgx = "^(_?[A-Z][A-Z0-9_]*|__[a-z0-9_]+__|_?[a-z][a-z0-9_]*)$"
+docstring-min-length = 12
+function-rgx = "^(?:(?P<exempt>setUp|tearDown|setUpModule|tearDownModule)|(?P<camel_case>_?[A-Z][a-zA-Z0-9]*)|(?P<snake_case>_?[a-z][a-z0-9_]*))$"
+good-names = ["i", "j", "k", "e", "main", "_"]
+inlinevar-rgx = "^[a-z][a-z0-9_]*$"
+method-rgx = "(?x)^(?:(?P<exempt>_[a-z0-9_]+__|runTest|setUp|tearDown|setUpTestCase|tearDownTestCase|setupSelf|tearDownClass|setUpClass|(test|assert)_*[A-Z0-9][a-zA-Z0-9_]*|next)|(?P<camel_case>_{0,2}[A-Z][a-zA-Z0-9_]*)|(?P<snake_case>_{0,2}[a-z][a-z0-9_]*))$"
+module-rgx = "^(_?[a-z][a-z0-9_]*|__init__)$"
+no-docstring-rgx = "(__.*__|main|test.*|.*test|.*Test)$"
+variable-rgx = "^[a-z][a-z0-9_]*$"
+
+[tool.pylint.classes]
+valid-classmethod-first-arg = ["cls", "class_"]
+
+[tool.pylint.format]
+ignore-long-lines = "(?x)(\n^\\s*(\\#\\ )?<?https?://\\S+>?$|\n^\\s*(from\\s+\\S+\\s+)?import\\s+.+$)"
+max-line-length = 80
+single-line-if-stmt = true
+
+[tool.pylint."messages control"]
+disable = ["missing-module-docstring"]
+
+[tool.pylint.miscellaneous]
+notes = ["TODO"]
+
+[tool.pylint.similarities]
+ignore-imports = false
+
+[tool.pylint.string]
+check-quote-consistency = true
+
+[tool.pylint.variables]
+dummy-variables-rgx = "^\\*{0,2}(_$|unused_|dummy_)"
