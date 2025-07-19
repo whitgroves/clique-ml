@@ -58,7 +58,7 @@ class SelectiveEnsemble: # once len(models) >= limit, reject new models with sco
         return True, score
 
     def prune(self, limit:int=None) -> ext.Self: # removes models with scores above the mean; recurses if limit is set
-        pruned = SelectiveEnsemble(limit=(limit or self.limit))
+        pruned = SelectiveEnsemble(X_test=self.test_x, y_test=self.test_y, limit=(limit or self.limit))
         pruned.models = {m:self.models[m] for m in self.models if self.scores[m] <= self.mean_score}
         pruned.scores = {m:self.scores[m] for m in pruned.models}
         pruned.kwargs = {m:self.kwargs[m] for m in pruned.models}
@@ -66,7 +66,7 @@ class SelectiveEnsemble: # once len(models) >= limit, reject new models with sco
         return pruned
     
     def clone(self, limit:int=None) -> ext.Self:
-        clone = SelectiveEnsemble(limit=(limit or self.limit))
+        clone = SelectiveEnsemble(X_test=self.test_x, y_test=self.test_y, limit=(limit or self.limit))
         clone.models = self.models.copy()
         clone.scores = self.scores.copy()
         clone.kwargs = self.kwargs.copy()
@@ -180,8 +180,8 @@ def train_ensemble(models:list[IModel], X:pd.DataFrame, y:pd.DataFrame|pd.Series
                 while gc.collect() > 0: pass # it had to be this way
     return ensemble
 
-def load_ensemble(model_dir:str=MODEL_FOLDER, **kwargs) -> SelectiveEnsemble:
-    ensemble = SelectiveEnsemble(**kwargs)
+def load_ensemble(X_test:pd.DataFrame, y_test:pd.DataFrame|pd.Series, model_dir:str=MODEL_FOLDER, **kwargs) -> SelectiveEnsemble:
+    ensemble = SelectiveEnsemble(X_test=X_test, y_test=y_test, **kwargs)
     for file in os.listdir(model_dir):
         name, filetype = file.rsplit('.', 1)
         filepath = os.path.join(model_dir, file)
