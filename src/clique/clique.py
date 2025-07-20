@@ -73,8 +73,8 @@ class Clique(dict):
                     self[model.model_type] = model
             case None: pass
             case _: raise ValueError('`models` must be an `IModel`, `ModelProfile`, or a list of such objects.')
-        self._inputs, self._targets = None, None
-        self.set_testing_data(inputs=kwargs.get('inputs'), targets= kwargs.get('targets'))
+        self.inputs = kwargs.get('inputs')
+        self.targets = kwargs.get('targets')
         self.scoring = kwargs.get('scoring') or mean_absolute_error
         self.limit = kwargs.get('limit') or len(self) or nan
 
@@ -90,38 +90,36 @@ class Clique(dict):
         return super().__setitem__(key, value)
     
     def __setattr__(self, name, value):
-        '''Override to add pseudo type-checking for updates to `scoring` and `limit`.'''
+        '''Override to add type checking for updates to `inputs`, `targets`, `scoring`, and `limit`.'''
         match name:
             case 'limit': value = float(value)
             case 'scoring':
                 if not callable(value): raise ValueError('Scoring function must be a callable function.')
+            case 'inputs' | 'targets':
+                match value:
+                    case ndarray() | DataFrame() | Series() | None: pass
+                    case _: raise ValueError('Testing data must be of type `ndarray`, `DataFrame`, `Series`, or `None`.')
+                if value is not None:
+                    _compare = self.targets if name == 'inputs' else self.inputs
+                    if _compare is not None:
+                        len_value = value.shape[0] if isinstance(value, ndarray) else len(value)
+                        len_compare = _compare.shape[0] if isinstance(_compare, ndarray) else len(_compare)
+                        if len_value != len_compare: raise ValueError('Data length for testing inputs and targets must match.')
         object.__setattr__(self, name, value)
 
     def __repr__(self) -> str:
         return f'<Clique ({len(self)} model(s); limit: {self.limit})>'
     
-    def set_testing_data(self, inputs:ndarray|DataFrame|Series|None=None, targets:ndarray|DataFrame|Series|None=None) -> None:
+    def reset_testing_data(self, inputs:ndarray|DataFrame|Series|None=None, targets:ndarray|DataFrame|Series|None=None) -> None:
         '''
-        Loads a set of inputs and targets into the ensemble for model evaluation.
-        Raises an error if either `inputs` or `targets` are not `ndarray`, `DataFrame`, `Series`, or `None`.
+        Allows both `inputs` and `targets` to be swapped out with a single function call.
+        (As compared to clearing one, then reassigning the other - or both - attributes).
+        Note that calling this function will clear all prior testing data, so only use when both sets should be overwritten.
         '''
-        for test_data in [inputs, targets]:
-            match test_data:
-                case ndarray() | DataFrame() | Series() | None: pass
-                case _: raise ValueError('Test data must be of type `ndarray`, `DataFrame`, `Series`, or `None`.')
-        if inputs is not None:
-            _targets = self._targets if targets is None else targets
-            if _targets is not None:
-                len_inputs = inputs.shape[0] if isinstance(inputs, ndarray) else len(inputs)
-                len_targets = _targets.shape[0] if isinstance(_targets, ndarray) else len(_targets)
-                if len_inputs != len_targets: raise ValueError('Data length for testing inputs and targets must match.')
-            self._inputs = inputs
-        if targets is not None:
-            if inputs is None and self._inputs is not None:
-                len_inputs = self._inputs.shape[0] if isinstance(self._inputs, ndarray) else len(self._inputs)
-                len_targets = targets.shape[0] if isinstance(targets, ndarray) else len(targets)
-                if len_inputs != len_targets: raise ValueError('Data length for testing inputs and targets must match.')
-            self._targets = targets
+        self.inputs = None
+        self.targets = None
+        self.inputs = inputs
+        self.targets = targets
     
     def evaluate_models(self) -> float:
         '''
