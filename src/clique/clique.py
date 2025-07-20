@@ -21,6 +21,8 @@ class ModelProfile:
     
     def __init__(self, model:IModel, fit_kw:dict={}, predict_kw:dict={}) -> None:
         if not isinstance(model, IModel): raise ValueError('`model` must be compatible with the IModel interface.')
+        if not isinstance(fit_kw, dict): raise ValueError('`fit_kw` must be of type `dict`.')
+        if not isinstance(predict_kw, dict): raise ValueError('`predict_kw` must be of type `dict`.')
         self._model = model
         self._fit_kw = fit_kw
         self._predict_kw = predict_kw
@@ -51,12 +53,12 @@ class Clique(dict):
     '''
     def __init__(self, **kwargs) -> None:
         '''
-        Creates a new instance of the class. Accepts the following keyword arguments to enable full functionality:
-            - models: The initial model or models to add. Not required, but at least 1 must be present to make predictions.
-            - test_X: A set of inputs to use for model evaluation. Must be set to enable rejection of new models.
-            - test_y: A set of targets to use for model evaluation. Must be set to enable rejection of new models.
-            - scoring: The scoring function to use for model evaluation. Defauls to mean absolute error if none is provided.
-            - limit: The target size of the ensemble. Defaults to the number of models provided at construction.
+        Creates a new instance of the class. Accepts the following keyword arguments to enable model evaluations:
+            - `models`: The initial model or models to add. Not required, but at least 1 must be present to make predictions.
+            - `inputs`: A set of inputs for model scoring. Must be set to evaluate and reject new models.
+            - `targets`: A set of targets for model scoring. Must be set to evaluate and reject new models.
+            - `scoring`: The scoring function to use for model evaluation. Defauls to mean absolute error if none is provided.
+            - `limit`: The target size of the ensemble. Defaults to the number of models provided at construction.
         '''
         model_or_models = kwargs.get('models')
         match model_or_models:
@@ -69,30 +71,62 @@ class Clique(dict):
                 for t in model_or_models:
                     model = t if isinstance(t, ModelProfile) else ModelProfile(t) # ModelProfile constructor will type check
                     self[model.model_type] = model
-            case _:
-                raise ValueError('`models` must be an `IModel`, `ModelProfile`, or a list of such objects.')
-        self._test_X = kwargs.get('test_X')
-        self._test_y = kwargs.get('test_y')
-        self._scoring = kwargs.get('scoring') or mean_absolute_error
-        self.limit = kwargs.get('limit') or len(self) or None
-    
+            case None: pass
+            case _: raise ValueError('`models` must be an `IModel`, `ModelProfile`, or a list of such objects.')
+        self._inputs, self._targets = None, None
+        self.set_testing_data(inputs=kwargs.get('inputs'), targets= kwargs.get('targets'))
+        self.scoring = kwargs.get('scoring') or mean_absolute_error
+        self.limit = kwargs.get('limit') or len(self) or nan
+
     def __setitem__(self, key, value) -> None:
         '''Override to do type checking and avoid naming collisions as new models are added.'''
-        if not isinstance(value, ModelProfile): raise ValueError('Clique can only contain items of type ModelProfile.')
         if key in self: # prevent naming overlap -- recurses if key already exists
             match_obj = search(r'_\d+$', key)
             if match_obj:key = f'{key[:match_obj.start()]}_{int(key[match_obj.start()+1:])+1}'
             else: key += '_0'
             self.__setitem__(key, value)
+        if not isinstance(value, ModelProfile): raise ValueError('Clique can only contain items of type ModelProfile.')
+        # TODO: scoring, evaluation
         return super().__setitem__(key, value)
+    
+    def __setattr__(self, name, value):
+        '''Override to add pseudo type-checking for updates to `scoring` and `limit`.'''
+        match name:
+            case 'limit': value = float(value)
+            case 'scoring':
+                if not callable(value): raise ValueError('Scoring function must be a callable function.')
+        object.__setattr__(self, name, value)
 
     def __repr__(self) -> str:
         return f'<Clique ({len(self)} model(s); limit: {self.limit})>'
     
-    def score(self, test_X:ndarray|DataFrame, test_y:ndarray|DataFrame|Series, scoring:Callable=None) -> float:
+    def set_testing_data(self, inputs:ndarray|DataFrame|Series|None=None, targets:ndarray|DataFrame|Series|None=None) -> None:
         '''
-        Scores all of the models in the ensemble against a set of test data using the ensemble's scoring function.
-        If an alternate scoring function is provided (`scoring`) that will be used instead.
+        Loads a set of inputs and targets into the ensemble for model evaluation.
+        Raises an error if either `inputs` or `targets` are not `ndarray`, `DataFrame`, `Series`, or `None`.
+        '''
+        for test_data in [inputs, targets]:
+            match test_data:
+                case ndarray() | DataFrame() | Series() | None: pass
+                case _: raise ValueError('Test data must be of type `ndarray`, `DataFrame`, `Series`, or `None`.')
+        if inputs is not None:
+            _targets = self._targets if targets is None else targets
+            if _targets is not None:
+                len_inputs = inputs.shape[0] if isinstance(inputs, ndarray) else len(inputs)
+                len_targets = _targets.shape[0] if isinstance(_targets, ndarray) else len(_targets)
+                if len_inputs != len_targets: raise ValueError('Data length for testing inputs and targets must match.')
+            self._inputs = inputs
+        if targets is not None:
+            if inputs is None and self._inputs is not None:
+                len_inputs = self._inputs.shape[0] if isinstance(self._inputs, ndarray) else len(self._inputs)
+                len_targets = targets.shape[0] if isinstance(targets, ndarray) else len(targets)
+                if len_inputs != len_targets: raise ValueError('Data length for testing inputs and targets must match.')
+            self._targets = targets
+    
+    def evaluate_models(self) -> float:
+        '''
+        Scores all of the models in the ensemble against the ensemble's testing data and scoring function.
+        Raises an error if the test data has not been set, or the scoring function is not configured properly.
         Returns the mean score for the ensemble, which is also stored in the class.
         '''
         # for model in self._models
