@@ -1,19 +1,52 @@
 # clique-ml
-A selective ensemble for predictive time-series models that tests new additions to prevent downgrades in performance.
+An ensemble for machine learning models that, when provided with test data, validates new additions to prevent downgrades in performance.
 
-This code was written and tested against a CUDA 12.2 environment; if you run into compatability issues, try setting up a `venv` using [`cuda-venv.sh`](./cuda-venv.sh).
+The container class `Clique` is compatible with any model that has both `fit` and `predict` methiods, although it has only been tested against regression models included in `tensorflow.`, `lightgbm`, `xgboost`, and `catboost`.
+
+This code was written against a CUDA 12.2 environment; if you run into compatability issues, [`cuda-venv.sh`](./cuda-venv.sh) can be used to setup a virtualenv on linux.
+
+All code is unlicensed and freely available for anyone to use. If you run into issues, please contact me on X: [@whitgroves](https://x.com/whitgroves)
+
+## Classes
+
+`clique` makes 4 classes available to the developer:
+
+- `IModel`: A `Protocol` that acts as an interface for any model matching `scikit-learn`'s estimator API (`fit` and `predict`).
+
+- `ModelProfile`: A wrapper class to bundle any `IModel` with `fit` and `predict` keyword arguments, plus error scores post-evaluation.
+
+- `EvaluationError`: An error class for exceptions specific to model evaluation.
+
+- `Clique`: A container class that provides the main functionality of the package, detailed below. Also supports `IModel`.
 
 ## Usage
-### Setup
+
+### Installation
+
+The package can be installed with `pip`:
+
 ```
 pip install -U clique-ml
 ```
-```
-import clique
-```
-### Training
 
-Create a list of models to train. Supports any class that can call `fit()`, `predict()`, and `get_params()`:
+### Setup
+
+First, prepare your data:
+
+```
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+df = pd.read_csv('./training_data.csv')
+... # preprocessing
+y = df['target_variable']
+X = df.drop(['target_variable'], axis=1)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=489)
+```
+
+Then, instantiate the models that will form the core of the ensemble:
+
 ```
 import xgboost as xgb
 import lightgbm as lgb
@@ -27,71 +60,103 @@ models = [
     tf.keras.Sequential(...),
 ]
 ```
-Data is automatically split for training, testing, and validaiton, so simply pass `models`, inputs (`X`) and targets(`y`) to `train_ensemble()`:
+
+And load those models into your ensemble:
 
 ```
-X, y = ... # preprocessed data; 20% is set aside for validation, and the rest is trained on using k-folds
+from clique import Clique
 
-ensemble = clique.train_ensemble(models, X, y, folds=5, limit=3) # instance of clique.SelectiveEnsemble
+ensemble = Clique(models=models)
 ```
-`folds` sets `n_splits` for [scikit-learn's `TimeSeriesSplit` class](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html), which is used to implement k-folds here. For a single split, pass `folds=1`.
 
-`limit` sets a **soft target** for how many models to include in the ensemble. When set, once exceeded, the ensemble will reject new models that raise its mean score.
+Now you can run your training loop (in this example, for time series data):
 
-By default, the ensemble trains using **5 folds** and **no size limit**.
+```
+from sklearn.model_selection import TimeSeriesSplit
+
+for i, (i_train, i_valid) in enumerate(TimeSeriesSplit().split(X_train)):
+    val_data = [(X_train.iloc[i_valid, :], y_train.iloc[i_valid])]
+    for model in ensemble: # for ModelProfile in Clique
+        fit_kw = dict()
+        predict_kw = dict()
+        match model.model_type:
+            case 'Sequential':
+                if i == 0: model.compile(optimizer='adam', loss='mae')
+                keras_kw = dict(verbose=0, batch_size=256)
+                fit_kw.update(keras_kw)
+                predict_kw.update(keras_kw)
+            case 'LGBMRegressor':
+                fit_kw.update(dict(eval_set=val_data, eval_metric='l1'))
+            case 'XGBRegressor' | 'CatBoostRegressor':
+                fit_kw.update(dict(verbose=0, eval_set=val_data))
+        model.fit_kw = fit_kw
+        model.predict_kw = predict_kw
+    ensemble.fit(X_train.iloc[i_train, :], y_train.iloc[i_train])
+```
+
+And start to make predictions with the ensemble:
+
+```
+predictions = ensemble.predict(X_test)
+```
 
 ### Evaluation
 
-`train_ensemble()` will output the results of each sub-model's training on every fold:
-```
-Pre-training setup...Complete (0.0s)
-Model 1/5: Fold 1/5: Stopped: PredictionError: Model is guessing a constant value. -- 3      
-Model 2/5: Fold 1/5: Stopped: PredictionError: Model is guessing a constant value. -- 3       
-Model 3/5: Fold 1/5: Accepted with score: 0.03233311 (0.1s) (CatBoostRegressor_1731893049_0)          
-Model 3/5: Fold 2/5: Accepted with score: 0.02314115 (0.0s) (CatBoostRegressor_1731893050_1)          
-Model 3/5: Fold 3/5: Accepted with score: 0.01777214 (0.0s) (CatBoostRegressor_1731893050_2)
-...      
-Model 5/5: Fold 2/5: Rejected with score: 0.97019375 (0.3s)                            
-Model 5/5: Fold 3/5: Rejected with score: 0.41385662 (1.4s)                         
-Model 5/5: Fold 4/5: Rejected with score: 0.41153231 (0.8s)          
-Model 5/5: Fold 5/5: Rejected with score: 0.40335007 (1.6s)
-```
-Once trained, details of the final ensemble can be reviewed with:
-```
-print(ensemble) # <SelectiveEnsemble (5 model(s); mean: 0.03389993; best: 0.03321487; limit: 3)>
-```
-Or:
-```
-print(len(ensemble)) # 5
-print(ensemble.mean_score) # 0.033899934449981864
-print(ensemble.best_score) # 0.033214874389494775
-```
-### Pruning
-Since `SelectiveEnsemble` has to accept the first *N* models to establish a mean, frontloading with weaker models may cause oversaturation, even when `limit` is set.
+Once `fit` has been called, `Clique` can be evaluated and pruned to improve performance. 
 
-To remedy this, call `SelectiveEnsemble.prune()`:
-```
-pruned = ensemble.prune()
-```
-Which will return a copy of the ensemble with all sub-models scoring above the mean removed. 
+To start, load your test data into the ensemble:
 
-If a `limit` is passed in, the removal of all models above the mean will recurse until that limit is reached:
 ```
-triumvate = ensemble.prune(3)
-print(len(ensemble)) # 3 (or less)
+ensemble.inputs = X_test
+ensemble.targets = y_test
 ```
-This recursion is automatic for instances where `SelectiveEnsemble.limit` is set manually or by `train_ensemble()`.
+
+Note that once either `inputs` or `targets` is set, the ensemble will not accept assignments to the other attribute if the data length does not match (e.g., if `inputs` has 40 rows, setting `targets` with data for 39 rows will raise a `ValueError`).
+
+Consequently, the safest way to swap out testing data is through `reset_test_data`:
+
+```
+ensemble.reset_test_data(inputs=X_test, targets=y_test)
+```
+
+Which will first clear existing test data before assigning the new values (or clearing them, if no parameters are passed).
+
+Then, call `evaluate` to score your models:
+
+```
+ensemble.evaluate()
+```
+
+Which will populate the `mean_score`, `best_score`, and `best_model` properties for the ensemble:
+
+```
+ensemble.           # <Clique (5 model(s); limit: none)>
+ensemble.mean_score # 0.31446850398821063
+ensemble.best_score # 0.033214874389494775
+ensemble.best_model # <ModelProfile (CatBoostRegressor)>
+```
+
+An enable the `prune` function to return a copy of the ensemble with all models scoring above the mean removed:
+
+```
+triad = ensemble.prune(3) # <Clique (3 model(s); limit: 3)>
+triad.mean_score          # 0.03373027543351623
+```
 
 ### Deployment
-To make predictions, simply call:
-```
-predictions = ensemble.predict(...) # with a new set of inputs
-```
-Which will use the mean score across all sub-models for each prediction.
 
-If you wish to continue training on an existing ensemble, use:
+Once trained and evaluated, the ensemble's models can be saved for later:
+
 ```
-existing = clique.load_ensemble(X_test=X, y_test=y) # test data must be passed in for new model evaluation
-updated = clique.train_ensemble(models, X, y, ensemble=existing)
+ensemble.save('.models/')
 ```
-Note that if a limit is set on the existing model, that will be set and enforced on the updated one.
+
+Which will save copies of each underlying model to be used elsewhere, or reloaded into another ensemble:
+
+```
+Clique().load('.models/') # fresh ensemble with no duplications
+ensemble.load('.models/') # will duplicate all models in the collection
+triad.load('.models/')    # will duplicate any saved models still in the collection
+```
+
+Also note that similar to `fit`, calls to `load` will enable evaluation and pruning, assuming all loaded models were previously trained.

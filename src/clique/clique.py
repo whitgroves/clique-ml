@@ -1,9 +1,15 @@
 from re import search
+from pathlib import Path
 from typing_extensions import Self, Any, Iterable, Protocol, runtime_checkable
 from sklearn.metrics import mean_absolute_error
+from sklearn.utils.validation import check_is_fitted
 from numpy import ndarray, nan, zeros, nan_to_num, isnan
 from numpy.ma import masked_invalid
 from pandas import DataFrame, Series
+from joblib import dump, load
+from tensorflow import keras
+from keras.models import load_model
+
 
 @runtime_checkable
 class IModel(Protocol):
@@ -23,6 +29,11 @@ class ModelProfile:
     '''
     
     def __init__(self, model:IModel, fit_kw:dict={}, predict_kw:dict={}) -> None:
+        '''
+        Creates an instance of the class. 
+        `model` must be compatible with the `IModel` interface, 
+            and `fit_kw` and `predict_kw` must be of type `dict` if provided.    
+        '''
         if not isinstance(model, IModel): raise ValueError('`model` must be compatible with the IModel interface.')
         if not isinstance(fit_kw, dict): raise ValueError('`fit_kw` must be of type `dict`.')
         if not isinstance(predict_kw, dict): raise ValueError('`predict_kw` must be of type `dict`.')
@@ -32,24 +43,37 @@ class ModelProfile:
         self.model_type = f'{type(model).__name__}'
         self.score = nan # initialized to ensure a (non-)value is always available
 
+    # object overrides
+
     def __getattr__(self, name) -> Any:
+        '''Override to pull in attributes from the underlying model.'''
         return getattr(self._model, name)
     
     def __repr__(self) -> str:
+        '''Override to indicate a ModelProfile (vs an IModel) when prompted.'''
         return f'<ModelProfile ({self.model_type})>'
     
+    # IModel wrappers
+
     def fit(self, X, y, **kwargs) -> IModel:
+        '''Wrapper for `fit` to automatically pass stored `fit` keywords.'''
         return self._model.fit(X, y, **kwargs, **self.fit_kw)
     
     def predict(self, X, **kwargs) -> ndarray:
+        '''Wrapper for `predict` to automatically pass stored `predict` keywords.'''
         return self._model.predict(X, **kwargs, **self.predict_kw)
+
+
+class EvaluationError(Exception):
+    '''Specific for errors during Clique evaluation.'''
+    pass
 
 
 class Clique(dict):
     '''
     An ensemble of models that, when provided with test data, validates new additions to prevent downgrades in performance.
     Instances may be initialized without an models or test data, but these must be present for the ensemble to be selective.
-    Inherits from `dict`
+    Inherits from `dict` and supports the `IModel` protocol.
     '''
     def __init__(self, **kwargs) -> None:
         '''
@@ -60,9 +84,10 @@ class Clique(dict):
             - `scoring`: The scoring function to use for model evaluation. Defauls to mean absolute error if none is provided.
             - `limit`: The target size of the ensemble. Defaults to the number of models provided at construction.
         '''
-        self.can_evaluate = False
+        self._is_fitted = False
         self.limit = kwargs.get('limit') or len(self) # must precede model setup or it will fail
         self.scoring = kwargs.get('scoring') or mean_absolute_error # above may apply to this too
+        self.reset_test_data(inputs=kwargs.get('inputs'), targets=kwargs.get('targets'))
         model_or_models = kwargs.get('models')
         match model_or_models:
             case IModel():
@@ -75,10 +100,15 @@ class Clique(dict):
                 for t in model_or_models:
                     model = t if isinstance(t, ModelProfile) else ModelProfile(t) # ModelProfile constructor will type check
                     self[model.model_type] = model
+            case str() | Path():
+                if isinstance(model_or_models, str): model_or_models = Path(model_or_models)
+                self.load(load_dir=model_or_models)
             case None: pass
             case _: raise ValueError('`models` must be an `IModel`, `ModelProfile`, or a list of such objects.')
-        self.inputs = kwargs.get('inputs')
-        self.targets = kwargs.get('targets')
+        # self.inputs = kwargs.get('inputs')
+        # self.targets = kwargs.get('targets')
+
+    # dict overrides
 
     def __setitem__(self, key, value) -> None:
         '''Override to do type checking, avoid naming collisions, and evaluate new models as they are added.'''
@@ -88,7 +118,7 @@ class Clique(dict):
             else: key += '_0'
             self.__setitem__(key, value)
         if not isinstance(value, ModelProfile): raise ValueError('Clique can only contain items of type ModelProfile.')
-        if self.can_evaluate and len(self) > self.limit and self.scoring(self.targets, value.predict(self.inputs)) > self.mean_score: return None
+        if len(self) > self.limit and self.can_evaluate and self.scoring(self.targets, value.predict(self.inputs)) > self.mean_score: return None
         return super().__setitem__(key, value)
     
     def __setattr__(self, name, value):
@@ -108,7 +138,7 @@ class Clique(dict):
                 match value:
                     case ndarray() | DataFrame() | Series() | None: pass
                     case _: raise ValueError('Testing data must be of type `ndarray`, `DataFrame`, `Series`, or `None`.')
-                if value is not None and hasattr(self, 'inputs') and hasattr(self, 'targets'):
+                if value is not None and self.testing_initialized:
                     _compare = self.targets if name == 'inputs' else self.inputs
                     if _compare is not None:
                         len_value = value.shape[0] if isinstance(value, ndarray) else len(value)
@@ -123,6 +153,8 @@ class Clique(dict):
     def __repr__(self) -> str:
         return f'<Clique ({len(self)} model(s); limit: {self.limit if self.limit > 0 else "none"})>'
     
+    # properties
+
     @property
     def mean_score(self) -> float:
         '''Returns the mean error score for all models in the collection.'''
@@ -139,25 +171,71 @@ class Clique(dict):
         best_score = self.best_score
         for model in self:
             if model.score == best_score: return model
+
+    @property
+    def testing_initialized(self) -> bool:
+        '''Returns whether test inputs and targets have been initialized. Returns `True` even if either is set to `None`.'''
+        return hasattr(self, 'inputs') and hasattr(self, 'targets')
+
+    @property
+    def can_evaluate(self) -> bool:
+        '''Returns whether the ensemble is ready for evaluation (i.e., models have been fit and testing data is present).'''
+        return self.testing_initialized and self.inputs is not None and self.targets is not None and self._is_fitted
     
+    # object management
+
     def copy(self) -> Self:
-        '''Override so copies of this instance have the same test data and scoring function.'''
+        '''
+        Override so copies of this instance have the same test data and scoring function.
+        Returns a copy of the instance.
+        '''
         clone = Clique(models=super().copy())
-        clone.can_evaluate = self.can_evaluate
+        clone._is_fitted = self._is_fitted
         clone.reset_test_data(inputs=self.inputs, targets=self.targets)
         clone.scoring = self.scoring
         clone.limit = self.limit
         return clone
-
-    def fit(self, X:ndarray|DataFrame|Series, y:ndarray|DataFrame|Series) -> Self:
+    
+    def save(self, save_dir:str|Path) -> Self:
         '''
-        Fits each of the models in the ensemble to a set of training data, then evaluates them if training data is set.
+        Saves the current ensemble of models to disk under `save_dir`. 
+        If `save_dir` does not exist, it (and any parent folders) will be created before saving.
         Returns the instance for method chaining.
         '''
-        for model in self: model.fit(X, y)
-        self.can_evaluate = True
-        if self.inputs is not None and self.targets is not None: self.evaluate()
+        if isinstance(save_dir, str): save_dir = Path(save_dir)
+        if len(save_dir.suffix) > 0: raise ValueError('`save_dir` must be a directory path.')
+        save_dir.mkdir(parents=True, exist_ok=True)
+        for model_id, model in self.items():
+            if model.model_type in ['Sequential', 'Model']: model.save(save_dir.joinpath(f'{model_id}.keras'))
+            else: dump(model._model, save_dir.joinpath(f'{model_id}.joblib')) # remember -- save the underlying model and NOT the profile!
         return self
+    
+    def load(self, load_dir:str|Path) -> Self:
+        '''
+        Loads all models saved in `load_dir` into the collection, then preps the ensemble for evaluation.
+        If `limit` is set and the ensemble is ready for evaluation, loaded models will be evaluated and (possibly) rejected.
+        Returns the instance for method chaining.
+        '''
+        if len(self) == 0 and not self._is_fitted: self._is_fitted = True # hack to make loading pre-trained models into an empty Clique work
+        if isinstance(load_dir, str): load_dir = Path(load_dir)
+        if not load_dir.is_dir(): raise ValueError('`load_dir` must be an existing directory.')
+        for filepath in load_dir.iterdir():
+            match filepath.suffix:
+                case '.keras': 
+                    model = load_model(filepath=filepath)
+                    if not hasattr(model, 'optimizer'): self._is_fitted = False
+                case '.joblib': 
+                    model = load(filename=filepath)
+                    try: check_is_fitted(model)
+                    except: 
+                        if hasattr(model, '_random_seed'): continue # Catboost https://github.com/catboost/catboost/blob/master/catboost/python-package/catboost/core.py#L1769
+                        self._is_fitted = False
+                case _: continue
+            model = ModelProfile(model)
+            self[model.model_type] = model
+        return self
+    
+    # training/deployment
 
     def reset_test_data(self, inputs:ndarray|DataFrame|Series|None=None, targets:ndarray|DataFrame|Series|None=None) -> Self:
         '''
@@ -171,6 +249,16 @@ class Clique(dict):
         self.inputs = inputs
         self.targets = targets
         return self
+
+    def fit(self, X:ndarray|DataFrame|Series, y:ndarray|DataFrame|Series, **kwargs) -> Self:
+        '''
+        Fits each of the models in the ensemble to a set of training data, then evaluates them if training data is set.
+        Supports `kwargs` as part of the `IModel` protocol, but is only recommended if all models are of the same type.
+        Returns the instance for method chaining.
+        '''
+        for model in self: model.fit(X, y, **kwargs)
+        self._is_fitted = True
+        return self
     
     def evaluate(self) -> Self:
         '''
@@ -178,8 +266,8 @@ class Clique(dict):
         Raises an error if the test data has not been set, or the scoring function is not configured properly.
         Returns the instance for method chaining.
         '''
-        if not self.can_evaluate: raise AttributeError('Cannot evaluate models before they are trained. Call `fit` first.')
-        if self.inputs is None or self.targets is None: raise AttributeError('Testing inputs and targets have not been defined.')
+        if not self.can_evaluate: raise EvaluationError('Cannot evaluate models before they are trained. Call `fit` first.')
+        if self.inputs is None or self.targets is None: raise EvaluationError('Testing inputs and targets have not been defined.')
         for model in self: model.score = self.scoring(self.targets, model.predict(self.inputs))
         return self
 
@@ -189,22 +277,24 @@ class Clique(dict):
         Returns a copy of the instance with models at or below `limit`.
         '''
         mean_score = self.mean_score # instantiated since property loops through collection every time
-        limit = limit or self.limit # it had to be this way
+        if isnan(mean_score): raise EvaluationError('Model has not been evaluated yet. Call `evaluate` first.')
         clone = self.copy()
+        clone.limit = limit or self.limit
         for model_id in self.keys():
-            if isnan(self[model_id].score): raise AttributeError('Some models have not been scored. Call `evaluate` first.')
+            if isnan(self[model_id].score): raise EvaluationError('Some models have not been scored. Call `evaluate` first.')
             if self[model_id].score > mean_score: del clone[model_id]
-        if len(self) > limit > 1: return clone.prune(limit=limit)
+        if len(clone) > clone.limit > 1: return clone.prune(limit=limit)
         return clone
 
-    def predict(self, X:ndarray|DataFrame|Series) -> ndarray:
+    def predict(self, X:ndarray|DataFrame|Series, **kwargs) -> ndarray:
         '''
         Makes predictions for all models in the ensemble, then returns the consensus (mean) for all results.
+        Supports `kwargs` as part of the `IModel` protocol, but is only recommended if all models are of the same type.
         Returns the instance for method chaining.
         '''
         consensus = zeros(len(X))
         for model in self:
-            predictions = model.predict(X)
+            predictions = model.predict(X, **kwargs)
             predictions = predictions.reshape(-1) # reshape needed for tensorflow output; doesn't impact other model types
             mask = masked_invalid(predictions) # mask NaN and +/- inf to find greatest legit values; https://stackoverflow.com/a/41097911/3178898
             predictions = nan_to_num(predictions, posinf=mask.max()+mask.std(), neginf=mask.min()-mask.std()) # then use those to clamp the invalid ones
