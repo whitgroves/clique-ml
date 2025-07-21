@@ -40,7 +40,7 @@ class ModelProfile:
         self._model = model
         self.fit_kw = fit_kw
         self.predict_kw = predict_kw
-        self.model_type = f'{type(model).__name__}'
+        self.model_name = model.name if hasattr(model, 'name') else self.model_type
         self.score = nan # initialized to ensure a (non-)value is always available
 
     # object overrides
@@ -52,6 +52,13 @@ class ModelProfile:
     def __repr__(self) -> str:
         '''Override to indicate a ModelProfile (vs an IModel) when prompted.'''
         return f'<ModelProfile ({self.model_type})>'
+    
+    # properties
+
+    @property
+    def model_type(self) -> str:
+        '''Returns the type of the underlying model.'''
+        return f'{type(self._model).__name__}'
     
     # IModel wrappers
 
@@ -92,14 +99,14 @@ class Clique(dict):
         match model_or_models:
             case IModel():
                 model = ModelProfile(model_or_models)
-                self[model.model_type] = model
+                self[model.model_name] = model
             case ModelProfile():
-                self[model_or_models.model_type] = model_or_models
+                self[model_or_models.model_name] = model_or_models
             case list() | dict():
                 if isinstance(model_or_models, dict): model_or_models = model_or_models.values()
                 for t in model_or_models:
                     model = t if isinstance(t, ModelProfile) else ModelProfile(t) # ModelProfile constructor will type check
-                    self[model.model_type] = model
+                    self[model.model_name] = model
             case str() | Path():
                 if isinstance(model_or_models, str): model_or_models = Path(model_or_models)
                 self.load(load_dir=model_or_models)
@@ -116,6 +123,7 @@ class Clique(dict):
             match_obj = search(r'_\d+$', key)
             if match_obj:key = f'{key[:match_obj.start()]}_{int(key[match_obj.start()+1:])+1}'
             else: key += '_0'
+            value.model_name = key
             self.__setitem__(key, value)
         if not isinstance(value, ModelProfile): raise ValueError('Clique can only contain items of type ModelProfile.')
         if len(self) > self.limit and self.can_evaluate and self.scoring(self.targets, value.predict(self.inputs)) > self.mean_score: return None
@@ -232,7 +240,7 @@ class Clique(dict):
                         self._is_fitted = False
                 case _: continue
             model = ModelProfile(model)
-            self[model.model_type] = model
+            self[model.model_name] = model
         return self
     
     # training/deployment
