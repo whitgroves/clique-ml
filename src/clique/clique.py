@@ -264,8 +264,14 @@ class Clique(dict):
         Supports `kwargs` as part of the `IModel` protocol, but is only recommended if all models are of the same type.
         Returns the instance for method chaining.
         '''
-        for model in self: model.fit(X, y, **kwargs)
-        self._is_fitted = True
+        errors = 0
+        for model in self: 
+            try: model.fit(X, y, **kwargs)
+            except Exception as e: 
+                errors += 1
+                print(f'Exception occurred while training sub-model: {e}')
+        self._is_fitted = self._is_fitted or (errors == 0)
+        if self.can_evaluate: self.evaluate()
         return self
     
     def evaluate(self) -> Self:

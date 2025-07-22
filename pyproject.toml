@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clique-ml"
-version = "0.0.8"
+version = "0.0.9"
 description = "A selective ensemble for predictive models that tests new additions to prevent downgrades in performance."
 keywords = ["selective", "ensemble", "tensorflow", "maching learning", "cuda"]
 requires-python = ">=3.10"
