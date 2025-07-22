@@ -274,8 +274,8 @@ class Clique(dict):
         Raises an error if the test data has not been set, or the scoring function is not configured properly.
         Returns the instance for method chaining.
         '''
-        if not self.can_evaluate: raise EvaluationError('Cannot evaluate models before they are trained. Call `fit` first.')
         if self.inputs is None or self.targets is None: raise EvaluationError('Testing inputs and targets have not been defined.')
+        if not self.can_evaluate: raise EvaluationError('Cannot evaluate models before they are trained. Call `fit` first.')
         for model in self: model.score = self.scoring(self.targets, model.predict(self.inputs))
         return self
 
