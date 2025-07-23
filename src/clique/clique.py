@@ -3,7 +3,7 @@ from pathlib import Path
 from typing_extensions import Self, Any, Iterable, Protocol, runtime_checkable
 from sklearn.metrics import mean_absolute_error
 from sklearn.utils.validation import check_is_fitted
-from numpy import ndarray, nan, zeros, nan_to_num, isnan
+from numpy import ndarray, nan, zeros, nan_to_num, isnan, unique
 from numpy.ma import masked_invalid
 from pandas import DataFrame, Series
 from joblib import dump, load
@@ -84,7 +84,7 @@ class Clique(dict):
     '''
     def __init__(self, **kwargs) -> None:
         '''
-        Creates a new instance of the class. Accepts the following keyword arguments to enable model evaluations:
+        Creates a new instance of the class. Accepts the following keyword arguments:
             - `models`: The initial model or models to add. Not required, but at least 1 must be present to make predictions.
             - `inputs`: A set of inputs for model scoring. Must be set to evaluate and reject new models.
             - `targets`: A set of targets for model scoring. Must be set to evaluate and reject new models.
@@ -112,8 +112,6 @@ class Clique(dict):
                 self.load(load_dir=model_or_models)
             case None: pass
             case _: raise ValueError('`models` must be an `IModel`, `ModelProfile`, or a list of such objects.')
-        # self.inputs = kwargs.get('inputs')
-        # self.targets = kwargs.get('targets')
 
     # dict overrides
 
@@ -285,25 +283,29 @@ class Clique(dict):
         for model in self: model.score = self.scoring(self.targets, model.predict(self.inputs))
         return self
 
-    def prune(self, limit:int|None=None) -> Self:
+    def prune(self, limit:int|None=None, skip_evaluate:bool=False) -> Self:
         '''
-        Removes models with error scores above the mean. If `limit` > 0, recurses until `len()` <= `limit`.
+        Evaluates the ensemble, then removes models with error scores above the mean.
+        If `limit` or `self.limit` > 1, recurses until `len(output)` <= `limit`.
+        Evaluation can be skipped by setting `skip_evaluate` to `True`, but prior score(s) will be used.
         Returns a copy of the instance with models at or below `limit`.
+        Note that the copied instance will also have its limit set to `limit` if provided.
         '''
-        mean_score = self.mean_score # instantiated since property loops through collection every time
+        if not skip_evaluate: self.evaluate()
+        mean_score = self.mean_score # instantiated since property loops through collection on every request
         if isnan(mean_score): raise EvaluationError('Model has not been evaluated yet. Call `evaluate` first.')
-        clone = self.copy()
-        clone.limit = limit or self.limit
+        clone = Clique(limit=(limit or self.limit))
         for model_id in self.keys():
             if isnan(self[model_id].score): raise EvaluationError('Some models have not been scored. Call `evaluate` first.')
-            if self[model_id].score > mean_score: del clone[model_id]
-        if len(clone) > clone.limit > 1: return clone.prune(limit=limit)
+            if self[model_id].score <= mean_score: clone[model_id] = self[model_id]
+        if len(clone) > clone.limit > 1: return clone.prune(limit=limit, skip_evaluate=skip_evaluate)
         return clone
 
     def predict(self, X:ndarray|DataFrame|Series, **kwargs) -> ndarray:
         '''
         Makes predictions for all models in the ensemble, then returns the consensus (mean) for all results.
         Supports `kwargs` as part of the `IModel` protocol, but is only recommended if all models are of the same type.
+        Raises an `EvaluationError` if the model returns a constant value for all inputs.
         Returns the instance for method chaining.
         '''
         consensus = zeros(len(X))
@@ -312,6 +314,7 @@ class Clique(dict):
             predictions = predictions.reshape(-1) # reshape needed for tensorflow output; doesn't impact other model types
             mask = masked_invalid(predictions) # mask NaN and +/- inf to find greatest legit values; https://stackoverflow.com/a/41097911/3178898
             predictions = nan_to_num(predictions, posinf=mask.max()+mask.std(), neginf=mask.min()-mask.std()) # then use those to clamp the invalid ones
+            if len(unique(predictions)) == 1: raise EvaluationError('Model is guessing a constant value.')
             consensus += predictions
         consensus = consensus / len(self)
         return consensus
